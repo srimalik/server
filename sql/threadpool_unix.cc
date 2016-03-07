@@ -116,6 +116,7 @@ struct connection_t
   connection_t *next_in_queue;
   connection_t **prev_in_queue;
   ulonglong abs_wait_timeout;
+  CONNECT* connect;
   bool logged_in;
   bool bound_to_poll_descriptor;
   bool waiting;
@@ -1228,26 +1229,17 @@ connection_t *alloc_connection()
 void tp_add_connection(CONNECT *connect)
 {
   connection_t *connection;
-  THD *thd;
   DBUG_ENTER("tp_add_connection");
 
-  if (!(connection= alloc_connection()) || !(thd= connect->create_thd()))
-  {
-    my_free(connection);
-    connect->close_and_delete();
-    DBUG_VOID_RETURN;
-  }
-  connection->thd= thd;
-  delete connect;
-
-  add_to_active_threads(thd);
-
-  thd->event_scheduler.data= connection;
-      
   /* Assign connection to a group. */
   thread_group_t *group= 
     &all_groups[thd->thread_id%group_count];
-    
+
+  connection=  alloc_connection();
+  if (!connection)
+  {
+    DBUG_VOID_RETURN;
+  }
   connection->thread_group=group;
       
   mysql_mutex_lock(&group->mutex);
@@ -1271,9 +1263,12 @@ static void connection_abort(connection_t *connection)
 {
   DBUG_ENTER("connection_abort");
   thread_group_t *group= connection->thread_group;
-  
-  threadpool_remove_connection(connection->thd); 
-  
+
+  if (connection->thd)
+  {
+    threadpool_remove_connection(connection->thd);
+  }
+
   mysql_mutex_lock(&group->mutex);
   group->connection_count--;
   mysql_mutex_unlock(&group->mutex);
@@ -1442,7 +1437,7 @@ static void handle_event(connection_t *connection)
 
   if (!connection->logged_in)
   {
-    err= threadpool_add_connection(connection->thd);
+    THD *thd= threadpool_add_connection(connection->connect, connection);
     connection->logged_in= true;
   }
   else 
