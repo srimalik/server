@@ -1216,6 +1216,7 @@ connection_t *alloc_connection()
     connection->logged_in= false;
     connection->bound_to_poll_descriptor= false;
     connection->abs_wait_timeout= ULONGLONG_MAX;
+    connection->thd= 0;
   }
   DBUG_RETURN(connection);
 }
@@ -1231,15 +1232,17 @@ void tp_add_connection(CONNECT *connect)
   connection_t *connection;
   DBUG_ENTER("tp_add_connection");
 
-  /* Assign connection to a group. */
-  thread_group_t *group= 
-    &all_groups[thd->thread_id%group_count];
-
   connection=  alloc_connection();
   if (!connection)
   {
     DBUG_VOID_RETURN;
   }
+  connection->connect= connect;
+
+  /* Assign connection to a group. */
+  thread_group_t *group= 
+    &all_groups[connect->thread_id%group_count];
+
   connection->thread_group=group;
       
   mysql_mutex_lock(&group->mutex);
@@ -1437,7 +1440,8 @@ static void handle_event(connection_t *connection)
 
   if (!connection->logged_in)
   {
-    THD *thd= threadpool_add_connection(connection->connect, connection);
+    connection->thd = threadpool_add_connection(connection->connect, connection);
+    err= (connection->thd == NULL);
     connection->logged_in= true;
   }
   else 
