@@ -94,7 +94,7 @@ struct Worker_thread_context
 /*
   Attach/associate the connection with the OS thread,
 */
-static bool thread_attach(THD* thd)
+static void thread_attach(THD* thd)
 {
   pthread_setspecific(THR_KEY_mysys,thd->mysys_var);
   thd->thread_stack=(char*)&thd;
@@ -103,7 +103,6 @@ static bool thread_attach(THD* thd)
   if (PSI_server)
     PSI_server->set_thread(thd->event_scheduler.m_psi);
 #endif
-  return 0;
 }
 
 
