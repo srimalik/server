@@ -241,6 +241,7 @@ void init_connection(connection_t *connection, CONNECT *connect)
   connection->logged_in = false;
   connection->timeout= ULONGLONG_MAX;
   connection->callback_instance= 0;
+  connection->thd= 0;
   memset(&connection->overlapped, 0, sizeof(OVERLAPPED));
   InitializeThreadpoolEnvironment(&connection->callback_environ);
   SetThreadpoolCallbackPool(&connection->callback_environ, pool);
@@ -663,14 +664,13 @@ static void CALLBACK shm_read_callback(PTP_CALLBACK_INSTANCE instance,
 
 void tp_add_connection(CONNECT *connect)
 {
-  connection_t *con;
-  DBUG_EXECUTE_IF("simulate_failed_connection_1", return;);
-  
+  connection_t *con;  
   con= (connection_t *)malloc(sizeof(connection_t));
   if (!con)
   {
     tp_log_warning("Allocation failed", "tp_add_connection");
     connect->close_and_delete();
+    return;
   }
 
   init_connection(con, connect);

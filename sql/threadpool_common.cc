@@ -112,6 +112,7 @@ THD* threadpool_add_connection(CONNECT *connect, void *scheduler_data)
   THD *thd= NULL;
   int error=1;
 
+ 
   Worker_thread_context worker_context;
   worker_context.save();
  
@@ -122,12 +123,17 @@ THD* threadpool_add_connection(CONNECT *connect, void *scheduler_data)
 
   pthread_setspecific(THR_KEY_mysys, 0);
   my_thread_init();
-
+  
   st_my_thread_var* mysys_var= (st_my_thread_var *)pthread_getspecific(THR_KEY_mysys);
-  if (!mysys_var || !(thd= connect->create_thd()))
+  DBUG_EXECUTE_IF("simulate_failed_connection_1", mysys_var= NULL; my_thread_end(););
+  if (!mysys_var ||!(thd= connect->create_thd()))
   {
     /* Out of memory? */
     connect->close_and_delete();
+    if (mysys_var)
+    {
+      my_thread_end();
+    }
     worker_context.restore();
     return NULL;
   }
