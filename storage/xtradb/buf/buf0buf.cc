@@ -2,6 +2,7 @@
 
 Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
+Copyright (c) 2016, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -59,6 +60,24 @@ Created 11/5/1995 Heikki Tuuri
 #endif // HAVE_LIBNUMA
 #include "trx0trx.h"
 #include "srv0start.h"
+
+/* Contex used for multi-threaded buffer pool
+initialization. */
+typedef struct {
+	os_thread_id_t	wthread_id;	/*!< OS thread id used to initialize
+					this buffer pool instance */
+	os_thread_t	wthread;	/*!< OS worker thread used to
+					initialize buffer pool instance. */
+	ulint		buf_pool_id;	/*!< buffer pool instance number */
+	buf_pool_t*	buf_pool;	/*!< pointer to buffer pool instance
+					*/
+	ulint		size;		/*!< size of buffer pool instance */
+	dberr_t		err;		/*!< initialization status
+					DB_SUCCESS for success or DB_ERROR
+					for failure.*/
+	bool		completed;	/*!< true if initialization of this
+					instance is completed. */
+} buf_pool_ctx_t;
 
 /* prototypes for new functions added to ha_innodb.cc */
 trx_t* innobase_get_trx();
@@ -1485,6 +1504,22 @@ buf_pool_init_instance(
 }
 
 /********************************************************************//**
+Thread to initialize one buffer pool instance */
+extern "C" UNIV_INTERN
+os_thread_ret_t
+DECLARE_THREAD(buf_pool_init_thread)(
+/*=================================*/
+	void*	arg)
+{
+	buf_pool_ctx_t*	ctx = ((buf_pool_ctx_t*)arg);
+
+	ctx->err = (dberr_t)buf_pool_init_instance(ctx->buf_pool, ctx->size, ctx->buf_pool_id);
+	ctx->completed = true;
+	os_thread_exit(NULL);
+	OS_THREAD_DUMMY_RETURN;
+}
+
+/********************************************************************//**
 free one buffer pool instance */
 static
 void
@@ -1544,6 +1579,7 @@ buf_pool_init(
 {
 	ulint		i;
 	const ulint	size	= total_size / n_instances;
+	buf_pool_ctx_t*	buf_ctx;
 
 	ut_ad(n_instances > 0);
 	ut_ad(n_instances <= MAX_BUFFER_POOLS);
@@ -1567,16 +1603,48 @@ buf_pool_init(
 	buf_pool_ptr = (buf_pool_t*) mem_zalloc(
 		n_instances * sizeof *buf_pool_ptr);
 
+	buf_ctx = (buf_pool_ctx_t*) mem_zalloc(
+		n_instances * sizeof(buf_pool_ctx_t));
+
 	for (i = 0; i < n_instances; i++) {
 		buf_pool_t*	ptr	= &buf_pool_ptr[i];
+		buf_pool_ctx_t* ctx	= &buf_ctx[i];
+		os_thread_id_t	new_thread_id;
 
-		if (buf_pool_init_instance(ptr, size, i) != DB_SUCCESS) {
+		ctx->buf_pool_id = i;
+		ctx->buf_pool = ptr;
+		ctx->size = size;
 
-			/* Free all the instances created so far. */
-			buf_pool_free(i);
+		ctx->wthread = os_thread_create(buf_pool_init_thread,
+			(void *) ctx,
+			&new_thread_id);
+		ctx->wthread_id = new_thread_id;
+	}
 
-			return(DB_ERROR);
+	/* Wait until all buffer pool instances are initialized */
+	ulint n_completed = 0;
+	do {
+		os_thread_sleep(1000000);
+		n_completed = 0;
+		for(i = 0; i < n_instances; i++) {
+			buf_pool_ctx_t* ctx	= &buf_ctx[i];
+			if (ctx->completed) {
+				n_completed++;
+			}
 		}
+	} while (n_completed < n_instances);
+
+	/* Check that initialization of buffer pool instances
+	was successfull. */
+	for(i = 0; i < n_instances; i++) {
+		buf_pool_ctx_t* ctx	= &buf_ctx[i];
+		if (ctx->err != DB_SUCCESS) {
+			buf_pool_free(n_instances);
+			return (DB_ERROR);
+		}
+#ifdef __WIN__
+		CloseHandle(ctx->wthread);
+#endif
 	}
 
 	buf_pool_set_sizes();
@@ -1611,7 +1679,10 @@ buf_pool_free(
 	ulint	i;
 
 	for (i = 0; i < n_instances; i++) {
-		buf_pool_free_instance(buf_pool_from_array(i));
+		buf_pool_t* pool = buf_pool_from_array(i);
+		if (pool) {
+			buf_pool_free_instance(pool);
+		}
 	}
 
 	mem_free(buf_pool_ptr);
